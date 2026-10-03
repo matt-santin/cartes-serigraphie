@@ -1,10 +1,13 @@
 """Carte de France des forêts, en 4 calques de sérigraphie.
 
+Le cadre est centré sur la France ; les pays voisins visibles reçoivent le
+même traitement (terre + forêt), avec leurs frontières en noir.
+
 Ordre d'impression :
   1. mer    (bleu)       : le fond, qui déborde légèrement sous les terres (trapping)
-  2. terre  (terre)      : la France entière, en aplat
+  2. terre  (terre)      : toutes les terres, en aplat
   3. forêt  (vert foncé) : les zones boisées, imprimées par-dessus la terre
-  4. noir                : les limites des départements et le cadre
+  4. noir                : départements, frontières, côtes des voisins et cadre
 
 Sorties dans sortie/ : un SVG et un PDF par calque (noir sur blanc),
 plus un aperçu en couleur.
@@ -49,8 +52,13 @@ def charger():
     depts = gpd.read_file(DATA / "departements.geojson").to_crs(CRS)
     pays = gpd.read_file(DATA / "ne_countries" / "ne_10m_admin_0_countries.shp")
     pays = pays.clip(box(-12, 38, 16, 55)).to_crs(CRS)  # découpe avant projection
-    lacs = gpd.read_file(DATA / "ne_lakes" / "ne_10m_lakes.shp")
-    lacs = lacs.clip(box(-6, 41, 10, 52)).to_crs(CRS)
+    osm = gpd.read_file(DATA / "lacs_osm.geojson")
+    ne = gpd.read_file(DATA / "ne_lakes" / "ne_10m_lakes.shp")
+    ne = ne[~ne.name.isin(["Lake Geneva", "Bodensee"])]  # remplacés par OSM
+    ne_eu = gpd.read_file(DATA / "ne_lakes_europe" / "ne_10m_lakes_europe.shp")
+    lacs = gpd.GeoDataFrame(geometry=list(osm.geometry) + list(ne.geometry) + list(ne_eu.geometry),
+                            crs="EPSG:4326")
+    lacs = lacs.clip(box(-12, 38, 16, 55)).to_crs(CRS)
     return depts, pays, lacs
 
 
@@ -73,7 +81,7 @@ def mise_en_page(depts):
 
 
 # --- Forêt --------------------------------------------------------------------
-def foret_mm(emprise, ech, france_mm, vers_mm):
+def foret_mm(emprise, ech, terres_mm, vers_mm):
     taille_px = PIXEL_MM * ech
     largeur = int(round((emprise[2] - emprise[0]) / taille_px))
     hauteur = int(round((emprise[3] - emprise[1]) / taille_px))
@@ -105,7 +113,7 @@ def foret_mm(emprise, ech, france_mm, vers_mm):
     polys = [shape(g) for g, v in features.shapes(fin.astype("uint8"), mask=fin,
                                                      transform=transform_fin) if v == 1]
     foret = vers_mm(unary_union(polys))
-    foret = foret.simplify(SIMPLIF_MM).buffer(0).intersection(france_mm)
+    foret = foret.simplify(SIMPLIF_MM).buffer(0).intersection(terres_mm)
     return _polygones(foret)
 
 
@@ -192,9 +200,10 @@ def main():
     lacs = unary_union(lacs.geometry.buffer(0))
     depts["geometry"] = depts.geometry.buffer(0).difference(lacs)  # Léman en eau
     france = unary_union(depts.geometry)
-    voisins = pays[pays.ADMIN != "France"]
-    voisins = voisins[voisins.intersects(zone)]
-    voisins = unary_union(voisins.geometry.buffer(0).intersection(zone))
+    france_ne = unary_union(pays[pays.ADMIN == "France"].geometry.buffer(0))
+    pays_zone = pays[(pays.ADMIN != "France") & pays.intersects(zone)].copy()
+    pays_zone["geometry"] = pays_zone.geometry.buffer(0).intersection(zone)
+    voisins = unary_union(pays_zone.geometry)
     # bouche les interstices entre les deux sources le long des frontières terrestres
     joint = voisins.buffer(2000).intersection(france.buffer(15_000))
     voisins = unary_union([voisins, joint]).difference(france).difference(lacs)
@@ -203,16 +212,21 @@ def main():
     voisins_mm = vers_mm(voisins).intersection(cadre)
     terres_mm = unary_union([france_mm, voisins_mm])
 
-    # la mer déborde sous la France le long des côtes ; les pays voisins restent papier
-    mer_mm = (cadre.difference(terres_mm).buffer(TRAP_MM)
-              .intersection(cadre).difference(voisins_mm))
+    # la mer déborde sous toutes les côtes
+    mer_mm = cadre.difference(terres_mm).buffer(TRAP_MM).intersection(cadre)
 
     print("Calcul de la forêt…")
-    foret = foret_mm(emprise, ech, france_mm, vers_mm)
-    part = foret.area / france_mm.area
+    foret = foret_mm(emprise, ech, terres_mm, vers_mm)
+    part = foret.intersection(france_mm).area / france_mm.area
     print(f"   {len(foret.geoms)} polygones, {100 * part:.0f} % de la France en vert")
 
-    limites = unary_union([vers_mm(g).boundary for g in depts.geometry])
+    # frontières et côtes des voisins (Natural Earth), sauf les segments partagés
+    # avec la France, où les limites des départements font foi (pas de double trait)
+    bords_voisins = (unary_union(pays_zone.geometry.boundary)
+                     .difference(france_ne.boundary.buffer(50))
+                     .difference(france.buffer(300)).difference(lacs))
+    limites = unary_union([vers_mm(g).boundary for g in depts.geometry]
+                          + [vers_mm(bords_voisins), vers_mm(lacs.boundary)])
     limites = limites.intersection(cadre)
 
     def plein(g, c):
@@ -230,14 +244,14 @@ def main():
 
     contenus = {
         "mer": plein(mer_mm, "{c}"),
-        "terre": plein(france_mm, "{c}"),
+        "terre": plein(terres_mm, "{c}"),
         "foret": plein(foret, "{c}"),
         "noir": traits("{c}"),
     }
     noms = [("calque_1_mer", "mer", "1/4 — MER (bleu)"),
             ("calque_2_terre", "terre", "2/4 — TERRE"),
             ("calque_3_foret", "foret", "3/4 — FORÊT (vert foncé)"),
-            ("calque_4_noir", "noir", "4/4 — DÉPARTEMENTS (noir)")]
+            ("calque_4_noir", "noir", "4/4 — LIMITES (noir)")]
 
     print("Écriture :")
     # aperçu couleur, un calque Inkscape par encre

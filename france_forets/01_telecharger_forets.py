@@ -2,6 +2,7 @@
 
 - départements (gregoiredavid/france-geojson, commit figé)
 - pays et lacs Natural Earth 10m
+- contours précis du Léman et du lac de Constance (OpenStreetMap via Nominatim)
 - couverture arborée ESA WorldCover 2021 (classe 10 = arbres) sur l'emprise
   de la France, via les aperçus (overviews) des COG distants
   -> data/arbres_wgs84.tif (uint8, 100 = arbre, 0 = autre, 255 = pas de donnée)
@@ -27,7 +28,12 @@ DEPARTEMENTS = ("https://raw.githubusercontent.com/gregoiredavid/france-geojson/
 NATURAL_EARTH = {
     "ne_countries": "https://naciscdn.org/naturalearth/10m/cultural/ne_10m_admin_0_countries.zip",
     "ne_lakes": "https://naciscdn.org/naturalearth/10m/physical/ne_10m_lakes.zip",
+    "ne_lakes_europe": "https://naciscdn.org/naturalearth/10m/physical/ne_10m_lakes_europe.zip",
 }
+# relations OSM : Léman, lac de Constance (Natural Earth est trop grossier à cette échelle)
+LACS_OSM = "R332617,R1156846"
+NOMINATIM = ("https://nominatim.openstreetmap.org/lookup?osm_ids={}"
+             "&format=geojson&polygon_geojson=1&polygon_threshold=0.0005")
 URL = ("/vsicurl/https://esa-worldcover.s3.eu-central-1.amazonaws.com/"
        "v200/2021/map/ESA_WorldCover_10m_2021_v200_{}_Map.tif")
 OVERVIEW = 3  # index d'aperçu : facteur 16 -> ~160 m
@@ -51,6 +57,13 @@ def vecteurs():
             print(f"Natural Earth {dossier}…")
             with urllib.request.urlopen(url) as r:
                 zipfile.ZipFile(io.BytesIO(r.read())).extractall(DATA / dossier)
+    dest = DATA / "lacs_osm.geojson"
+    if not dest.exists():
+        print("Lacs OSM…")
+        req = urllib.request.Request(NOMINATIM.format(LACS_OSM),
+                                     headers={"User-Agent": "cartes-serigraphie"})
+        with urllib.request.urlopen(req) as r:
+            dest.write_bytes(r.read())
 
 
 def arbres():

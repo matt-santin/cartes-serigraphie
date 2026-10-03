@@ -61,7 +61,7 @@ def vecteurs():
     if not dest.exists():
         print("Lacs OSM…")
         req = urllib.request.Request(NOMINATIM.format(LACS_OSM),
-                                     headers={"User-Agent": "cartes-serigraphie"})
+                                     headers={"User-Agent": "serigraphie"})
         with urllib.request.urlopen(req) as r:
             dest.write_bytes(r.read())
 

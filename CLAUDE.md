@@ -14,7 +14,7 @@ Règles :
   - `02_carte.py` : génère les calques dans `sortie/`, avec les réglages (format, seuils, épaisseurs) en tête de fichier ;
   - `README.md` : calques, ordre d'impression, sources, commandes.
 - Seul le code est versionné : `data/`, `sortie/`, `exemples/` et `.venv/` sont ignorés. Les versions des librairies sont dans `requirements.txt`.
-- Dépôt GitHub : https://github.com/matt-santin/cartes-serigraphie
+- Dépôt GitHub : https://github.com/matt-santin/serigraphie
 
 ## Conventions de sérigraphie retenues
 

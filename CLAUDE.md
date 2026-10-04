@@ -26,3 +26,4 @@ Règles :
 ## Cartes réalisées
 
 - `france_forets/` : France des forêts, 500 × 500 mm, Lambert-93, 4 encres (mer bleue, terre, forêt vert foncé, noir pour départements et frontières). Forêt issue d'ESA WorldCover 2021 (densité locale ≥ 50 %), départements gregoiredavid/france-geojson, voisins et lacs Natural Earth, Léman et lac de Constance OSM. Les pays voisins reçoivent le même traitement que la France ; le cadrage reste centré sur la France.
+- `europe/` : Europe vue de l'espace, 700 × 500 mm, projection perspective verticale (satellite à 3 000 km au-dessus de 41,5° N, 15° E) avec l'horizon courbe en haut, 3 encres (terre ocre clair façon carte d'école, puis mer et fleuves principaux en bleu, puis frontières, noms des pays façon Vidal-Lablache et capitales en noir). Natural Earth 10m v5.1.1.

@@ -1,15 +1,17 @@
-"""Carte de l'Europe vue de l'espace, en 3 calques de sérigraphie.
+"""Carte de l'Europe vue de l'espace, en 4 calques de sérigraphie.
 
 Projection perspective verticale (vue satellite, « nsper ») : l'Europe remplit
 la feuille et le haut montre l'horizon courbe du globe, au-delà du pôle Nord,
-avec le papier blanc au-dessus.
+avec le papier blanc au-dessus. La glace (banquise médiane 2015-2024 et glaciers)
+est en réserve : le blanc du papier, comme le ciel.
 
 Ordre d'impression (la plus claire d'abord) :
   1. terre  (ocre clair, façon carte d'école) : toutes les terres ; déborde de
-     0,3 mm sous la mer (trapping)
-  2. mer    (bleu) : mers, océans, grands lacs, et fleuves principaux imprimés
+     0,3 mm sous la mer (trapping) ; neige des hauts sommets en réserve
+  2. relief (marron foncé) : estompage du relief en trame de points, par-dessus l'ocre
+  3. mer    (bleu) : mers, océans, grands lacs, et fleuves principaux imprimés
      par-dessus la terre
-  3. noir : frontières, noms des pays et capitales, par-dessus le reste
+  4. noir : canevas, frontières, noms des pays et capitales, par-dessus le reste
 
 Sorties dans sortie/ : un SVG et un PDF par calque (noir sur blanc),
 plus un aperçu en couleur.
@@ -21,7 +23,10 @@ import geopandas as gpd
 import numpy as np
 import shapely
 import shapely.ops
+import rasterio.features
+import rasterio.transform
 from pyproj import Transformer
+from scipy import ndimage
 from shapely.geometry import box, LineString, MultiPolygon, Polygon, Point
 from shapely.ops import unary_union
 
@@ -47,7 +52,28 @@ TRAP_MM = 0.3                    # débord de la terre sous la mer
 RANG_MAX = 7                     # fleuves gardés : rang Natural Earth ≤ RANG_MAX (plus = plus de rivières)
 TRAITS_FLEUVES_MM = {3: 0.6, 5: 0.45, 7: 0.35, 99: 0.3}  # épaisseur selon le rang (≤ clé)
 
-TRAIT_FRONTIERE_MM = 0.3
+TRAIT_FRONTIERE_MM = 0.45
+
+# Glace, en réserve (papier) sur la mer comme sur la terre : banquise présente au moins
+# la moitié des mois de 2015 à 2024 (NSIDC), et glaciers terrestres (Natural Earth)
+SEUIL_BANQUISE = 0.3             # part des mois où la glace doit être là
+PIXEL_BANQUISE_M = 5000          # grille de calcul de la fréquence de la banquise
+LAT_MIN_GLACIERS = 60            # glaciers gardés au nord de cette latitude (l'Arctique seulement)
+LAT_MIN_BANQUISE = 66.5          # banquise gardée au nord du cercle polaire (pas la Baltique)
+AIRE_MIN_GLACE_MM2 = 5           # plaques de glace isolées plus petites : supprimées
+
+# Relief (ETOPO 2022) : estompage (lumière du nord-ouest) rendu en trame de points
+# marron, plus dense dans les ombres ; neige en réserve au-dessus de NEIGE_M
+PIXEL_RELIEF_M = 2000            # grille de calcul de l'estompage (azimutale équidistante)
+LISSAGE_RELIEF_M = 5000          # généralisation du relief avant estompage (≈ une cellule de trame)
+EXAGERATION = 8                  # exagération verticale du relief
+SOLEIL = (315, 40)               # azimut et hauteur de la lumière (degrés)
+GAIN_OMBRE = 1.5                 # couverture de trame = GAIN × intensité de l'ombre
+LIGNES_CM = 18                   # linéature de la trame (lignes par cm)
+ANGLE_TRAME = 45                 # angle de la trame (degrés)
+COUVERTURE = (0.12, 0.70)        # couverture min (points plus petits : supprimés) et max
+NEIGE_M = 2800                   # altitude de la neige (réserve blanche dans l'ocre et le relief)
+PAS_GRILLE_MM = 0.25             # résolution de la grille de la carte (estompage, neige)
 # Noms de pays, façon carte murale Vidal-Lablache : grotesque grasse étroite, en
 # minuscules avec capitale, corps proportionnel à la taille du pays ; les noms
 # débordent librement sur les voisins et la mer. Ils suivent le parallèle qui passe
@@ -62,6 +88,13 @@ CAPITALE_MM = 3.6                # corps des noms de capitales
 CAPITALE_POLICE = ("/System/Library/Fonts/HelveticaNeue.ttc", "Bold Italic")
 RAYON_CAPITALE_MM = 0.9          # rond du symbole (trait 0,3 mm, point central plein)
 NOMS_CAPITALES = {"Noursoultan": "Astana"}   # noms à corriger (Astana a repris son nom en 2022)
+# Canevas : parallèles et méridiens tous les PAS_GRATICULE degrés, en trait fin ; seuls
+# les méridiens multiples de 30° montent jusqu'au pôle (sinon ils s'arrêtent à 80° N).
+# Les lignes s'interrompent autour des noms ; les degrés sont inscrits au bord de la carte.
+PAS_GRATICULE = 10
+TRAIT_GRATICULE_MM = 0.2
+BLANC_AUTOUR_NOMS_MM = 0.6       # interruption du canevas autour des noms
+DEGRES_MM = 2.8                  # corps des degrés en bordure
 TAILLE_NOM_MM = (4.0, 30.0)      # corps des noms de pays : min, max
 FACTEUR_TAILLE = 0.2             # corps = FACTEUR × √(surface visible du pays en mm²)
 REDUCTION_MAX = 0.6              # en cas de collision, on peut réduire jusqu'à 60 % du corps
@@ -80,7 +113,7 @@ POSITIONS = {"Morocco": (-5.2, 34.2), "Algeria": (3.5, 35.4), "Tunisia": (9.4, 3
              "Azerbaijan": (47.9, 40.4), "Armenia": (44.75, 40.1), "Montenegro": (18.3, 42.0, 0),
              "Spain": (-2.6, 39.9), "Moldova": (28.45, 47.05, 61)}
 
-COULEURS = {"terre": "#e8d08c", "mer": "#3d6f9e", "noir": "#1a1a1a"}
+COULEURS = {"terre": "#e8d08c", "relief": "#6b4a2b", "mer": "#3d6f9e", "noir": "#1a1a1a"}
 
 SPHERE = f"+R={R_TERRE} +units=m +no_defs"
 AEQD = f"+proj=aeqd +lat_0={LAT_0} +lon_0={LON_0} {SPHERE}"
@@ -126,11 +159,124 @@ def charger(theta_deg):
     villes = gpd.read_file(DATA / "ne_10m_populated_places" / "ne_10m_populated_places.shp")
     capitales = villes[(villes.FEATURECLA == "Admin-0 capital") & villes.intersects(zone)]
 
+    glaciers = gpd.read_file(DATA / "ne_10m_glaciated_areas" / "ne_10m_glaciated_areas.shp")
+    arctique = box(-180, LAT_MIN_GLACIERS, 180, 90)   # pas les Alpes ni le Caucase
+    glaciers = unary_union(list(glaciers[glaciers.intersects(arctique)].geometry.buffer(0).intersection(arctique)))
+
     pays = gpd.read_file(DATA / "ne_10m_admin_0_countries" / "ne_10m_admin_0_countries.shp")
     pays = pays[pays.TYPE.isin(["Sovereign country", "Country", "Disputed", "Sovereignty"])
                 & pays.intersects(zone)].copy()
     pays["geometry"] = pays.geometry.buffer(0).intersection(zone)
-    return terres, lacs, fleuves, frontieres, pays, capitales
+    return terres, lacs, fleuves, frontieres, pays, capitales, glaciers
+
+
+def banquise_mediane():
+    """Banquise présente au moins SEUIL_BANQUISE des mois (polygones NSIDC), dans le
+    système polaire stéréographique du NSIDC. Renvoie (géométrie, crs)."""
+    fichiers = sorted((DATA / "banquise").glob("*/*.shp"))
+    crs = gpd.read_file(fichiers[0]).crs
+    x0, y0, x1, y1 = -4_000_000, -4_000_000, 4_000_000, 4_000_000
+    larg = int((x1 - x0) / PIXEL_BANQUISE_M)
+    transform = rasterio.transform.from_bounds(x0, y0, x1, y1, larg, larg)
+    compte = np.zeros((larg, larg), dtype="uint16")
+    for f in fichiers:
+        g = gpd.read_file(f).to_crs(crs).geometry
+        compte += rasterio.features.rasterize(((geom, 1) for geom in g if geom is not None),
+                                              out_shape=compte.shape, transform=transform, dtype="uint16")
+    freq = ndimage.gaussian_filter(compte / len(fichiers), 1.0)
+    # suréchantillonnage x2 avant vectorisation : pas de marches d'escalier
+    fin = ndimage.zoom(freq, 2, order=1) >= SEUIL_BANQUISE
+    polys = [shapely.geometry.shape(g) for g, v in rasterio.features.shapes(
+        fin.astype("uint8"), mask=fin, transform=transform * transform.scale(0.5)) if v == 1]
+    print(f"   banquise : {len(fichiers)} mois, seuil {SEUIL_BANQUISE:.0%}")
+    # au nord du cercle polaire : en stéréographique polaire, un parallèle est un cercle
+    x, y = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform(0, LAT_MIN_BANQUISE)
+    cercle = Point(0, 0).buffer(np.hypot(x, y), quad_segs=256)
+    return unary_union(polys).simplify(PIXEL_BANQUISE_M / 4).intersection(cercle), crs
+
+
+def grille_carte(ech, top_m):
+    """Grille raster couvrant la carte : (forme, transform nsper, transform mm)."""
+    cadre_l, cadre_h = PAGE_L - 2 * MARGE, PAGE_H - 2 * MARGE
+    forme = (int(cadre_h / PAS_GRILLE_MM), int(cadre_l / PAS_GRILLE_MM))
+    t_nsper = rasterio.transform.from_origin(-cadre_l / 2 * ech, top_m, PAS_GRILLE_MM * ech, PAS_GRILLE_MM * ech)
+    t_mm = rasterio.Affine(PAS_GRILLE_MM, 0, MARGE, 0, PAS_GRILLE_MM, MARGE)
+    return forme, t_nsper, t_mm
+
+
+def relief_carte(rayon_calotte, forme, t_nsper):
+    """Altitude (m) et intensité de l'ombre (0-1) sur la grille de la carte.
+
+    L'estompage est calculé dans l'azimutale équidistante (peu déformée), puis
+    reporté dans la perspective : la lumière vient bien du nord-ouest partout."""
+    from rasterio.warp import reproject, Resampling
+    with rasterio.open(DATA / "etopo_europe.tif") as src:
+        z_src, t_src, crs_src = src.read(1).astype("float32"), src.transform, src.crs
+    z_src[z_src == -32768] = np.nan
+
+    n = int(2 * rayon_calotte / PIXEL_RELIEF_M)
+    t_aeqd = rasterio.transform.from_origin(-rayon_calotte, rayon_calotte, PIXEL_RELIEF_M, PIXEL_RELIEF_M)
+    z = np.full((n, n), np.nan, dtype="float32")
+    reproject(z_src, z, src_transform=t_src, src_crs=crs_src, src_nodata=np.nan,
+              dst_transform=t_aeqd, dst_crs=AEQD, dst_nodata=np.nan, resampling=Resampling.bilinear)
+    z0 = ndimage.gaussian_filter(np.nan_to_num(np.maximum(z, 0)), LISSAGE_RELIEF_M / PIXEL_RELIEF_M) * EXAGERATION
+    dzdy, dzdx = np.gradient(z0, PIXEL_RELIEF_M)   # lignes vers le sud : dzdy pointe au sud
+    pente = np.arctan(np.hypot(dzdx, dzdy))
+    az, haut = np.radians(SOLEIL[0]), np.radians(SOLEIL[1])
+    zen = np.pi / 2 - haut
+    # direction de descente : (-dzdx, +dzdy) en (est, nord) ; angle compté depuis le nord
+    descente = np.arctan2(-dzdx, dzdy)
+    eclairage = np.cos(zen) * np.cos(pente) + np.sin(zen) * np.sin(pente) * np.cos(az - descente)
+    ombre = np.clip((np.cos(zen) - eclairage) / np.cos(zen), 0, 1).astype("float32")
+
+    ombre_carte = np.zeros(forme, dtype="float32")
+    reproject(ombre, ombre_carte, src_transform=t_aeqd, src_crs=AEQD,
+              dst_transform=t_nsper, dst_crs=NSPER, dst_nodata=0, resampling=Resampling.bilinear)
+    z_carte = np.zeros(forme, dtype="float32")
+    reproject(np.nan_to_num(z_src), z_carte, src_transform=t_src, src_crs=crs_src,
+              dst_transform=t_nsper, dst_crs=NSPER, dst_nodata=0, resampling=Resampling.bilinear)
+    return z_carte, ombre_carte
+
+
+def vectoriser(masque, t_mm):
+    """Masque raster -> polygones lissés (en mm), sans marches d'escalier."""
+    k = 4
+    fin = ndimage.zoom(ndimage.gaussian_filter(masque.astype("float32"), 1.0), k, order=1) >= 0.5
+    polys = [shapely.geometry.shape(g) for g, v in rasterio.features.shapes(
+        fin.astype("uint8"), mask=fin, transform=t_mm * t_mm.scale(1 / k)) if v == 1]
+    return unary_union(polys).simplify(SIMPLIF_MM).buffer(0)
+
+
+def trame(intensite, t_mm, zone):
+    """Trame de points vectoriels : un point par cellule, de surface = couverture."""
+    cellule = 10 / LIGNES_CM
+    x0, y0, x1, y1 = zone.bounds
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    demi = np.hypot(x1 - x0, y1 - y0) / 2
+    u = np.arange(-demi, demi, cellule)
+    uu, vv = np.meshgrid(u, u)
+    a = np.radians(ANGLE_TRAME)
+    xs = cx + uu * np.cos(a) - vv * np.sin(a)
+    ys = cy + uu * np.sin(a) + vv * np.cos(a)
+    ok = (xs > x0) & (xs < x1) & (ys > y0) & (ys < y1)
+    xs, ys = xs[ok], ys[ok]
+    # couverture lue sur la grille (bilinéaire), zone lue sur un masque fin
+    inv = ~t_mm
+    col, lig = inv * (xs, ys)
+    c = ndimage.map_coordinates(intensite, [lig - 0.5, col - 0.5], order=1, mode="constant") * GAIN_OMBRE
+    garde = c >= COUVERTURE[0]
+    xs, ys, c = xs[garde], ys[garde], np.minimum(c[garde], COUVERTURE[1])
+    pas = 0.1
+    forme = (int((PAGE_H - 2 * MARGE) / pas), int((PAGE_L - 2 * MARGE) / pas))
+    t_fin = rasterio.Affine(pas, 0, MARGE, 0, pas, MARGE)
+    masque = rasterio.features.rasterize([(zone.buffer(-0.15), 1)], out_shape=forme, transform=t_fin, dtype="uint8")
+    col, lig = (~t_fin) * (xs, ys)
+    dedans = masque[np.clip(lig.astype(int), 0, forme[0] - 1), np.clip(col.astype(int), 0, forme[1] - 1)] == 1
+    xs, ys, c = xs[dedans], ys[dedans], c[dedans]
+    r = cellule * np.sqrt(c / np.pi)
+    print(f"   trame : {len(xs):,} points ({LIGNES_CM} lignes/cm, {ANGLE_TRAME}°)")
+    return "".join(f"M{x - rr:.2f},{y:.2f}a{rr:.2f},{rr:.2f} 0 1,0 {2 * rr:.2f},0a{rr:.2f},{rr:.2f} 0 1,0 {-2 * rr:.2f},0Z"
+                   for x, y, rr in zip(xs, ys, r))
 
 
 def epaisseur(rang):
@@ -149,7 +295,7 @@ def mise_en_page(horizon):
         g = shapely.affinity.scale(g, 1 / ech, -1 / ech, origin=(0, 0))
         return shapely.affinity.translate(g, MARGE, MARGE)
 
-    return vers_mm, ech
+    return vers_mm, ech, top_m
 
 
 def nettoyer(g, aire_min):
@@ -241,7 +387,8 @@ def ecrire(nom, contenu):
 def main():
     calotte, theta = calotte_visible()
     print(f"Horizon à {theta:.1f}° du centre de la vue")
-    terres, lacs, fleuves, frontieres, pays, capitales = charger(theta)
+    terres, lacs, fleuves, frontieres, pays, capitales, glaciers = charger(theta)
+    banquise, crs_banquise = banquise_mediane()
 
     geo_vers_aeqd = Transformer.from_crs(GEO, AEQD, always_xy=True)
     aeqd_vers_nsper = Transformer.from_crs(AEQD, NSPER, always_xy=True)
@@ -257,6 +404,11 @@ def main():
     fleuves = [(rang, projeter(projeter(f, geo_vers_aeqd).intersection(calotte), aeqd_vers_nsper))
                for rang, f in fleuves]
     frontieres = projeter(projeter(frontieres, geo_vers_aeqd).intersection(calotte), aeqd_vers_nsper)
+    banquise_vers_aeqd = Transformer.from_crs(crs_banquise, AEQD, always_xy=True)
+    banquise = projeter(projeter(banquise.segmentize(20_000), banquise_vers_aeqd).buffer(0)
+                        .intersection(calotte), aeqd_vers_nsper).buffer(0)
+    glaciers = projeter(projeter(glaciers, geo_vers_aeqd).buffer(0).intersection(calotte),
+                        aeqd_vers_nsper).buffer(0)
     capitales_nsper = []   # (nom, code pays, point nsper)
     for _, v in capitales.iterrows():
         pt = projeter(v.geometry, geo_vers_aeqd)
@@ -274,7 +426,7 @@ def main():
         nom = NOMS.get(p.ADMIN, p.NAME_FR)
         etiquettes.append((nom, p.ADM0_A3, lon, lat, angle[0] if angle else None, surface))
 
-    vers_mm, ech = mise_en_page(horizon)
+    vers_mm, ech, top_m = mise_en_page(horizon)
     print(f"Au centre de la vue : 1 mm = {ech / 1000:.1f} km  (1:{ech * 1000:,.0f})")
 
     cadre = box(MARGE, MARGE, PAGE_L - MARGE, PAGE_H - MARGE)
@@ -303,6 +455,29 @@ def main():
     fleuves_mm = unary_union(traits)
     mer_mm = _polygones(unary_union([mer_mm, fleuves_mm]))
     print(f"   terres : {len(terres_mm.geoms)} polygones, fleuves : rangs ≤ {RANG_MAX}")
+
+    # glace : réserve dans les deux encres (le papier), sans miettes ni filaments
+    # (banquise sur la mer seulement, glaciers sur la terre seulement)
+    mer_seule = globe_mm.difference(terre_nette)
+    glace_mm = unary_union([vers_mm(banquise).intersection(mer_seule),
+                            vers_mm(glaciers).intersection(terre_nette)])
+    glace_mm = glace_mm.simplify(SIMPLIF_MM).buffer(0)
+    glace_mm = glace_mm.buffer(-r).buffer(r).buffer(r).buffer(-r)
+    glace_mm = nettoyer(glace_mm.intersection(globe_mm), AIRE_MIN_GLACE_MM2)
+    terres_mm = nettoyer(terres_mm.difference(glace_mm), AIRE_MIN_MM2)
+    mer_mm = nettoyer(mer_mm.difference(glace_mm), AIRE_MIN_MM2)
+    print(f"   glace : {glace_mm.area:,.0f} mm² en réserve")
+
+    # relief : neige (réserve dans l'ocre) et trame d'estompage sur les terres restantes
+    print("Relief…")
+    forme, t_nsper, t_mm = grille_carte(ech, top_m)
+    z_carte, ombre_carte = relief_carte(calotte.bounds[2], forme, t_nsper)
+    neige_mm = vectoriser(z_carte >= NEIGE_M, t_mm).intersection(terre_nette).difference(glace_mm)
+    neige_mm = nettoyer(neige_mm, AIRE_MIN_MM2)
+    terres_mm = nettoyer(terres_mm.difference(neige_mm), AIRE_MIN_MM2)
+    print(f"   neige au-dessus de {NEIGE_M} m : {len(neige_mm.geoms)} taches, {neige_mm.area:.0f} mm²")
+    zone_relief = terre_nette.difference(glace_mm).difference(neige_mm.buffer(0.2))
+    trame_d = trame(ombre_carte, t_mm, zone_relief)
 
     frontieres_mm = vers_mm(frontieres).intersection(globe_mm)
     rayon_calotte = calotte.bounds[2]
@@ -477,6 +652,50 @@ def main():
             f'stroke-width="{0.07 * t:.2f}"/>')
     print(f"   {len(capitales_mm)} capitales")
 
+    # canevas : lignes denses en lon/lat, découpées à la calotte visible, puis en perspective
+    lignes_geo = [LineString([(lon, lat) for lat in np.arange(-10, (90 if lon % 30 == 0 else 80) + 0.01, 0.25)])
+                  for lon in range(-180, 180, PAS_GRATICULE)]
+    paralleles = range(PAS_GRATICULE, 90, PAS_GRATICULE)
+    lignes_geo += [LineString([(lon, lat) for lon in np.arange(-180, 180.01, 0.25)]) for lat in paralleles]
+    graticule = unary_union([projeter(projeter(l, geo_vers_aeqd).intersection(calotte), aeqd_vers_nsper)
+                             for l in lignes_geo])
+    graticule_mm = vers_mm(graticule).intersection(globe_mm)
+
+    # degrés là où les méridiens touchent le bas de la carte, et les parallèles les côtés
+    mesure_deg = mesureur(POLICE_FICHIER[0], "Regular")
+    bas = LineString([(MARGE, PAGE_H - MARGE), (PAGE_L - MARGE, PAGE_H - MARGE)])
+    gauche_ = LineString([(MARGE, MARGE), (MARGE, PAGE_H - MARGE)])
+    droite_ = LineString([(PAGE_L - MARGE, MARGE), (PAGE_L - MARGE, PAGE_H - MARGE)])
+    degres_svg = []
+
+    def degre(texte, x, y, ancre):
+        L, t = mesure_deg(texte) * DEGRES_MM, DEGRES_MM
+        x0 = {"start": x, "middle": x - L / 2, "end": x - L}[ancre]
+        e = box(x0 - 0.3, y - 0.75 * t, x0 + L + 0.3, y + 0.2 * t)
+        if globe_mm.contains(e) and not any(e.intersects(o) for o in occupe):
+            occupe.append(e)
+            degres_svg.append(f'<text x="{x:.2f}" y="{y:.2f}" font-family="{POLICE}" font-size="{t}" '
+                              f'text-anchor="{ancre}" fill="{{c}}">{texte}</text>')
+
+    for lon in range(-180, 180, PAS_GRATICULE):
+        l = vers_mm(projeter(projeter(LineString([(lon, la) for la in np.arange(-10, 80.01, 0.25)]),
+                                      geo_vers_aeqd).intersection(calotte), aeqd_vers_nsper))
+        x = l.intersection(bas)
+        if not x.is_empty and x.geom_type == "Point":
+            texte = f"{abs(lon)}° {'E' if lon > 0 else 'O'}" if lon else "0°"
+            degre(texte, x.x + 0.8, PAGE_H - MARGE - 1.2, "start")
+    for lat in paralleles:
+        l = vers_mm(projeter(projeter(LineString([(lo, lat) for lo in np.arange(-180, 180.01, 0.25)]),
+                                      geo_vers_aeqd).intersection(calotte), aeqd_vers_nsper))
+        for bord, x_txt, ancre in ((gauche_, MARGE + 1.2, "start"), (droite_, PAGE_L - MARGE - 1.2, "end")):
+            x = l.intersection(bord)
+            if not x.is_empty and x.geom_type == "Point":
+                degre(f"{lat}° N", x_txt, x.y - 1.0, ancre)
+
+    # interruption autour des noms (pays, capitales, degrés)
+    graticule_mm = graticule_mm.difference(unary_union(occupe).buffer(BLANC_AUTOUR_NOMS_MM))
+    print(f"   canevas tous les {PAS_GRATICULE}°, {len(degres_svg)} degrés en bordure")
+
     def plein(g, c):
         return f'<path d="{d_poly(g)}" fill="{c}" fill-rule="evenodd" stroke="none"/>'
 
@@ -489,11 +708,14 @@ def main():
                 f'stroke-linejoin="round" stroke-linecap="round"/>')
 
     contenus = {"terre": plein(terres_mm, "{c}"), "mer": plein(mer_mm, "{c}"),
-                "noir": traits(frontieres_mm, TRAIT_FRONTIERE_MM, "{c}") + "".join(noms_svg)
-                + "".join(capitales_svg)}
-    noms = [("calque_1_terre", "terre", "1/3 — TERRE (ocre clair)"),
-            ("calque_2_mer", "mer", "2/3 — MER ET FLEUVES (bleu)"),
-            ("calque_3_noir", "noir", "3/3 — FRONTIÈRES ET NOMS (noir)")]
+                "relief": f'<path d="{trame_d}" fill="{{c}}" stroke="none"/>',
+                "noir": traits(graticule_mm, TRAIT_GRATICULE_MM, "{c}")
+                + traits(frontieres_mm, TRAIT_FRONTIERE_MM, "{c}") + "".join(noms_svg)
+                + "".join(capitales_svg) + "".join(degres_svg)}
+    noms = [("calque_1_terre", "terre", "1/4 — TERRE (ocre clair)"),
+            ("calque_2_relief", "relief", "2/4 — RELIEF (marron foncé, trame)"),
+            ("calque_3_mer", "mer", "3/4 — MER ET FLEUVES (bleu)"),
+            ("calque_4_noir", "noir", "4/4 — FRONTIÈRES ET NOMS (noir)")]
 
     print("Écriture :")
     apercu = [("papier", "papier", f'<rect width="{PAGE_L}" height="{PAGE_H}" fill="#ffffff"/>')]

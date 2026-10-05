@@ -4,7 +4,8 @@
 - lacs Natural Earth 10m (ne_10m_lakes), dont la mer Caspienne
 - fleuves et rivières Natural Earth 10m (ne_10m_rivers_lake_centerlines)
 - pays (noms, points d'étiquette) et frontières terrestres Natural Earth 10m
-- villes Natural Earth 10m (pour les capitales)
+- villes Natural Earth 10m (capitales et grandes villes)
+- routes Natural Earth 10m (ne_10m_roads : grands axes)
 - glaciers Natural Earth 10m (ne_10m_glaciated_areas : Groenland, Svalbard, Islande…)
 - banquise arctique : étendue mensuelle du NSIDC Sea Ice Index (G02135, v4.0), un
   polygone par mois de 2015 à 2024 (120 fichiers), dans data/banquise/
@@ -35,6 +36,7 @@ COUCHES = {
     "ne_10m_admin_0_countries": "10m_cultural",
     "ne_10m_admin_0_boundary_lines_land": "10m_cultural",
     "ne_10m_populated_places": "10m_cultural",
+    "ne_10m_roads": "10m_cultural",
     "ne_10m_glaciated_areas": "10m_physical",
 }
 EXTENSIONS = [".shp", ".shx", ".dbf", ".prj", ".cpg"]

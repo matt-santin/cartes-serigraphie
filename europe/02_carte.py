@@ -11,7 +11,7 @@ Ordre d'impression (la plus claire d'abord) :
   2. relief (marron foncé) : estompage du relief en trame de points, par-dessus l'ocre
   3. mer    (bleu) : mers, océans, grands lacs, et fleuves principaux imprimés
      par-dessus la terre
-  4. noir : canevas, frontières, noms des pays et capitales, par-dessus le reste
+  4. noir : canevas, grands axes routiers, frontières, noms des pays, capitales et villes
 
 Sorties dans sortie/ : un SVG et un PDF par calque (noir sur blanc),
 plus un aperçu en couleur.
@@ -84,10 +84,21 @@ POLICE = "Helvetica Neue"        # Condensed Bold (font-stretch condensed, font-
 POLICE_FICHIER = ("/System/Library/Fonts/HelveticaNeue.ttc", "Condensed Bold")  # pour mesurer les noms
 # Capitales, comme chez Vidal-Lablache : rond pointé, nom en italique souligné, placé
 # autour du point là où il ne touche ni un nom de pays ni une autre capitale
-CAPITALE_MM = 3.6                # corps des noms de capitales
+CAPITALE_MM = 4.8                # corps des noms de capitales
 CAPITALE_POLICE = ("/System/Library/Fonts/HelveticaNeue.ttc", "Bold Italic")
-RAYON_CAPITALE_MM = 0.9          # rond du symbole (trait 0,3 mm, point central plein)
+RAYON_CAPITALE_MM = 1.2          # rond du symbole (trait 0,35 mm, point central plein)
 NOMS_CAPITALES = {"Noursoultan": "Astana"}   # noms à corriger (Astana a repris son nom en 2022)
+# Villes : point plein et nom en romain, plus petits que les capitales ; placées par
+# population décroissante, écartées s'il n'y a pas la place pour leur nom
+VILLE_POP_MIN = 200_000          # population de l'agglomération (POP_MAX de Natural Earth)
+VILLE_POP_RESERVEE = 1_000_000   # au-delà, le point est réservé avant les noms de pays
+VILLE_MM = (3.0, 3.6)            # corps des noms de villes : moins / plus de VILLE_POP_RESERVEE
+VILLE_POLICE = ("/System/Library/Fonts/HelveticaNeue.ttc", "Medium")
+RAYON_VILLE_MM = (0.5, 0.65)     # point plein : moins / plus de VILLE_POP_RESERVEE
+# Grands axes routiers (Natural Earth, rang ≤ ROUTE_RANG_MAX), en noir fin, sur la terre,
+# interrompus autour des noms et des points de villes
+ROUTE_RANG_MAX = 4
+TRAIT_ROUTE_MM = 0.3
 # Canevas : parallèles et méridiens tous les PAS_GRATICULE degrés, en trait fin ; seuls
 # les méridiens multiples de 30° montent jusqu'au pôle (sinon ils s'arrêtent à 80° N).
 # Les lignes s'interrompent autour des noms ; les degrés sont inscrits au bord de la carte.
@@ -107,11 +118,12 @@ NOMS_EXCLUS = {"Kuwait", "Uzbekistan", "Turkmenistan", "Kyrgyzstan"}   # pays qu
 # d'étiquette de Natural Earth (Afrique du Nord et Kazakhstan : hors de la partie visible ;
 # Royaume-Uni : tombe en mer ; Croatie : pays en croissant ; Caucase : trop serré ;
 # Monténégro : en mer ; Espagne : décalée pour laisser le Portugal à la verticale ;
-# Moldavie : inclinée le long du pays)
+# Moldavie : inclinée le long du pays ; Allemagne : au nord, entre les grandes villes)
 POSITIONS = {"Morocco": (-5.2, 34.2), "Algeria": (3.5, 35.4), "Tunisia": (9.4, 34.6),
              "Kazakhstan": (52.0, 48.8), "United Kingdom": (-1.6, 52.7), "Croatia": (17.6, 45.42),
              "Azerbaijan": (47.9, 40.4), "Armenia": (44.75, 40.1), "Montenegro": (18.3, 42.0, 0),
-             "Spain": (-2.6, 39.9), "Moldova": (28.45, 47.05, 61)}
+             "Spain": (-2.6, 39.9), "Moldova": (28.45, 47.05, 61),
+             "Germany": (10.2, 52.0)}
 
 COULEURS = {"terre": "#e8d08c", "relief": "#6b4a2b", "mer": "#3d6f9e", "noir": "#1a1a1a"}
 
@@ -158,6 +170,11 @@ def charger(theta_deg):
 
     villes = gpd.read_file(DATA / "ne_10m_populated_places" / "ne_10m_populated_places.shp")
     capitales = villes[(villes.FEATURECLA == "Admin-0 capital") & villes.intersects(zone)]
+    routes = gpd.read_file(DATA / "ne_10m_roads" / "ne_10m_roads.shp")
+    routes = routes[(routes.featurecla == "Road") & (routes.scalerank <= ROUTE_RANG_MAX) & routes.intersects(zone)]
+    routes = unary_union(list(routes.geometry.intersection(zone)))
+    grandes_villes = villes[(villes.FEATURECLA != "Admin-0 capital") & (villes.POP_MAX >= VILLE_POP_MIN)
+                            & villes.intersects(zone)].sort_values("POP_MAX", ascending=False)
 
     glaciers = gpd.read_file(DATA / "ne_10m_glaciated_areas" / "ne_10m_glaciated_areas.shp")
     arctique = box(-180, LAT_MIN_GLACIERS, 180, 90)   # pas les Alpes ni le Caucase
@@ -167,7 +184,7 @@ def charger(theta_deg):
     pays = pays[pays.TYPE.isin(["Sovereign country", "Country", "Disputed", "Sovereignty"])
                 & pays.intersects(zone)].copy()
     pays["geometry"] = pays.geometry.buffer(0).intersection(zone)
-    return terres, lacs, fleuves, frontieres, pays, capitales, glaciers
+    return terres, lacs, fleuves, frontieres, pays, capitales, grandes_villes, glaciers, routes
 
 
 def banquise_mediane():
@@ -387,7 +404,7 @@ def ecrire(nom, contenu):
 def main():
     calotte, theta = calotte_visible()
     print(f"Horizon à {theta:.1f}° du centre de la vue")
-    terres, lacs, fleuves, frontieres, pays, capitales, glaciers = charger(theta)
+    terres, lacs, fleuves, frontieres, pays, capitales, grandes_villes, glaciers, routes = charger(theta)
     banquise, crs_banquise = banquise_mediane()
 
     geo_vers_aeqd = Transformer.from_crs(GEO, AEQD, always_xy=True)
@@ -404,6 +421,7 @@ def main():
     fleuves = [(rang, projeter(projeter(f, geo_vers_aeqd).intersection(calotte), aeqd_vers_nsper))
                for rang, f in fleuves]
     frontieres = projeter(projeter(frontieres, geo_vers_aeqd).intersection(calotte), aeqd_vers_nsper)
+    routes = projeter(projeter(routes, geo_vers_aeqd).intersection(calotte), aeqd_vers_nsper)
     banquise_vers_aeqd = Transformer.from_crs(crs_banquise, AEQD, always_xy=True)
     banquise = projeter(projeter(banquise.segmentize(20_000), banquise_vers_aeqd).buffer(0)
                         .intersection(calotte), aeqd_vers_nsper).buffer(0)
@@ -415,6 +433,11 @@ def main():
         if calotte.contains(pt):
             capitales_nsper.append((NOMS_CAPITALES.get(v.NAME_FR, v.NAME_FR), v.ADM0_A3,
                                     projeter(pt, aeqd_vers_nsper)))
+    villes_nsper = []      # (nom, population, point nsper), par population décroissante
+    for _, v in grandes_villes.iterrows():
+        pt = projeter(v.geometry, geo_vers_aeqd)
+        if calotte.contains(pt):
+            villes_nsper.append((v.NAME_FR, v.POP_MAX, projeter(pt, aeqd_vers_nsper)))
     etiquettes = []   # (nom, code pays, lon, lat, angle forcé ou None, surface nsper)
     for _, p in pays[~pays.ADMIN.isin(NOMS_EXCLUS)].iterrows():
         lon, lat, *angle = POSITIONS.get(p.ADMIN, (p.LABEL_X, p.LABEL_Y))
@@ -533,6 +556,11 @@ def main():
     capitales_mm = [(nom, vers_mm(pt)) for nom, code, pt in capitales_nsper
                     if code in codes and globe_mm.contains(vers_mm(pt))]
     occupe = [pt.buffer(RAYON_CAPITALE_MM + 0.5) for _, pt in capitales_mm]
+    # (de même pour les points des plus grandes villes)
+    villes_mm = [(nom, pop, vers_mm(pt)) for nom, pop, pt in villes_nsper
+                 if globe_mm.contains(vers_mm(pt)) and terre_nette.contains(vers_mm(pt))]
+    occupe += [pt.buffer(RAYON_VILLE_MM[1] + 0.4) for _, pop, pt in villes_mm if pop >= VILLE_POP_RESERVEE]
+    n_reserves = len(occupe)
 
     defs, noms_svg = [], []
     # les grands pays d'abord : ils gardent leur place, les petits s'adaptent
@@ -572,9 +600,10 @@ def main():
         # en cas de collision : d'abord un léger décalage perpendiculaire, puis on réduit
         choix = None
         sin_a, cos_a = np.sin(np.radians(a)), np.cos(np.radians(a))
-        for t in tailles:
-            for d in (0, 0.6 * t, -0.6 * t, 1.2 * t, -1.2 * t):
-                for mode in ordre:
+        # (l'orientation préférée est épuisée, décalages et réductions compris, avant l'autre)
+        for mode in ordre:
+            for t in tailles:
+                for d in (0, 0.6 * t, -0.6 * t, 1.2 * t, -1.2 * t):
                     if mode == "courbe":
                         ligne_d = ligne.offset_curve(d) if d else ligne
                         e = emprise_courbe(ligne_d, ligne_d.project(pt), lignes, t)
@@ -615,34 +644,35 @@ def main():
             if abs(a) > 1:
                 print(f"   (nom incliné à {a:.0f}° : {nom!r})")
     noms_svg.insert(0, f'<defs>{"".join(defs)}</defs>')
-    print(f"   {len(occupe) - len(capitales_mm)} noms de pays")
+    print(f"   {len(occupe) - n_reserves} noms de pays")
 
-    # capitales : symbole, puis nom autour du point (est, ouest, diagonales, nord, sud)
-    mesure_cap = mesureur(*CAPITALE_POLICE)
-    capitales_svg = []
-    for nom, pt in capitales_mm:
-        x, y = pt.x, pt.y
-        capitales_svg.append(
-            f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{RAYON_CAPITALE_MM}" fill="none" stroke="{{c}}" stroke-width="0.3"/>'
-            f'<circle cx="{x:.2f}" cy="{y:.2f}" r="0.35" fill="{{c}}"/>')
-        place = None
-        for t in (CAPITALE_MM, 0.85 * CAPITALE_MM):
-            L, g = mesure_cap(nom) * t, RAYON_CAPITALE_MM + 0.8
-            h = 0.5 * t                       # demi-hauteur de l'emprise (capitales + soulignement)
+    def placer_nom(x, y, largeur_em, tailles, g):
+        """Cherche une place libre pour un nom autour du point (est, ouest, diagonales,
+        nord, sud). Renvoie (gauche, centre, corps, largeur) ou None ; occupe la place."""
+        for t in tailles:
+            L, h = largeur_em * t, 0.5 * t    # h : demi-hauteur de l'emprise (avec soulignement)
             for gauche, centre in [(x + g, y), (x - g - L, y),
                                    (x + 0.7 * g, y - 0.7 * g - h), (x + 0.7 * g, y + 0.7 * g + h),
                                    (x - 0.7 * g - L, y - 0.7 * g - h), (x - 0.7 * g - L, y + 0.7 * g + h),
                                    (x - L / 2, y - g - h), (x - L / 2, y + g + h)]:
                 e = box(gauche, centre - h, gauche + L, centre + h)
                 if globe_mm.contains(e) and not any(e.intersects(o) for o in occupe):
-                    place = (gauche, centre, t, L)
-                    break
-            if place:
-                break
+                    occupe.append(e)
+                    return gauche, centre, t, L
+        return None
+
+    # capitales : symbole, puis nom autour du point
+    mesure_cap = mesureur(*CAPITALE_POLICE)
+    capitales_svg = []
+    for nom, pt in capitales_mm:
+        x, y = pt.x, pt.y
+        capitales_svg.append(
+            f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{RAYON_CAPITALE_MM}" fill="none" stroke="{{c}}" stroke-width="0.35"/>'
+            f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{0.4 * RAYON_CAPITALE_MM:.2f}" fill="{{c}}"/>')
+        place = placer_nom(x, y, mesure_cap(nom), (CAPITALE_MM, 0.85 * CAPITALE_MM), RAYON_CAPITALE_MM + 0.8)
         if not place:
             print(f"   (pas de place pour la capitale {nom!r})")
             continue
-        occupe.append(e)
         gauche, centre, t, L = place
         base = centre + 0.25 * t
         capitales_svg.append(
@@ -651,6 +681,27 @@ def main():
             f'<path d="M{gauche:.2f},{base + 0.15 * t:.2f}H{gauche + L:.2f}" stroke="{{c}}" '
             f'stroke-width="{0.07 * t:.2f}"/>')
     print(f"   {len(capitales_mm)} capitales")
+
+    # villes, des plus peuplées aux moins peuplées, tant qu'il y a de la place
+    mesure_ville = mesureur(*VILLE_POLICE)
+    villes_svg = []
+    for nom, pop, pt in villes_mm:
+        x, y = pt.x, pt.y
+        reservee = pop >= VILLE_POP_RESERVEE
+        rayon, corps = RAYON_VILLE_MM[reservee], VILLE_MM[reservee]
+        point = pt.buffer(rayon + 0.4)
+        if not reservee and any(point.intersects(o) for o in occupe):
+            continue
+        place = placer_nom(x, y, mesure_ville(nom), (corps,), rayon + 0.6)
+        if not place:
+            continue
+        if not reservee:
+            occupe.append(point)
+        gauche, centre, t, L = place
+        villes_svg.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{rayon}" fill="{{c}}"/>'
+                          f'<text x="{gauche:.2f}" y="{centre + 0.3 * t:.2f}" font-family="{POLICE}" '
+                          f'font-weight="500" font-size="{t}" fill="{{c}}">{nom}</text>')
+    print(f"   {len(villes_svg)} villes de plus de {VILLE_POP_MIN:,} habitants (sur {len(villes_mm)})")
 
     # canevas : lignes denses en lon/lat, découpées à la calotte visible, puis en perspective
     lignes_geo = [LineString([(lon, lat) for lat in np.arange(-10, (90 if lon % 30 == 0 else 80) + 0.01, 0.25)])
@@ -694,6 +745,8 @@ def main():
 
     # interruption autour des noms (pays, capitales, degrés)
     graticule_mm = graticule_mm.difference(unary_union(occupe).buffer(BLANC_AUTOUR_NOMS_MM))
+    routes_mm = (vers_mm(routes).intersection(terre_nette).simplify(SIMPLIF_MM)
+                 .difference(unary_union(occupe).buffer(BLANC_AUTOUR_NOMS_MM)))
     print(f"   canevas tous les {PAS_GRATICULE}°, {len(degres_svg)} degrés en bordure")
 
     def plein(g, c):
@@ -710,8 +763,9 @@ def main():
     contenus = {"terre": plein(terres_mm, "{c}"), "mer": plein(mer_mm, "{c}"),
                 "relief": f'<path d="{trame_d}" fill="{{c}}" stroke="none"/>',
                 "noir": traits(graticule_mm, TRAIT_GRATICULE_MM, "{c}")
+                + traits(routes_mm, TRAIT_ROUTE_MM, "{c}")
                 + traits(frontieres_mm, TRAIT_FRONTIERE_MM, "{c}") + "".join(noms_svg)
-                + "".join(capitales_svg) + "".join(degres_svg)}
+                + "".join(capitales_svg) + "".join(villes_svg) + "".join(degres_svg)}
     noms = [("calque_1_terre", "terre", "1/4 — TERRE (ocre clair)"),
             ("calque_2_relief", "relief", "2/4 — RELIEF (marron foncé, trame)"),
             ("calque_3_mer", "mer", "3/4 — MER ET FLEUVES (bleu)"),

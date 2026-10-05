@@ -13,13 +13,24 @@ le haut montre l'horizon courbe du globe au-delà du pôle Nord, avec le papier 
 | 1 | `calque_1_terre` | ocre clair (jaune « carte d'école ») | toutes les terres ; déborde de 0,3 mm sous la mer ; neige au-dessus de 2 800 m en réserve |
 | 2 | `calque_2_relief` | marron foncé | estompage du relief (ETOPO 2022, lumière du nord-ouest) en trame de points vectoriels, 18 lignes/cm à 45°, couverture de 12 à 70 %, imprimé par-dessus l'ocre |
 | 3 | `calque_3_mer` | bleu | mers, océans et grands lacs jusqu'à l'horizon, plus les fleuves principaux (0,35 à 0,6 mm selon leur importance), imprimés par-dessus l'ocre |
-| 4 | `calque_4_noir` | noir | canevas tous les 10° (0,2 mm), frontières (0,45 mm), noms des pays le long des parallèles et capitales, façon Vidal-Lablache, imprimés par-dessus le reste |
+| 4 | `calque_4_noir` | noir | canevas tous les 10° (0,2 mm), grands axes routiers (0,3 mm), frontières (0,45 mm), noms des pays le long des parallèles, capitales et villes de plus de 200 000 habitants, façon Vidal-Lablache, imprimés par-dessus le reste |
 
 Pas de cadre : la carte s'arrête net au bord de la zone imprimable,
 et le ciel au-dessus de l'horizon est le papier. La glace de l'Arctique est aussi le papier (réserve
 dans les deux encres) : banquise 2015-2024 (présente au moins 30 % des mois) au nord du cercle polaire, et glaciers au nord de
 60° N (calotte du Groenland, Svalbard, Nouvelle-Zemble, Vatnajökull). Chaque calque porte les 4 croix de repérage.
 `europe_apercu.svg/pdf` : simulation en couleur (un calque Inkscape par encre).
+
+## Notes pour l'atelier
+
+- Format 700 × 500 mm, 4 croix de repérage dans les coins, nom du calque en marge basse ; films en PDF
+  (noir 100 % sur blanc, texte vectorisé), SVG modifiables à côté.
+- Ordre : 1 ocre clair (aperçu `#e8d08c`), 2 marron foncé (`#6b4a2b`), 3 bleu (`#3d6f9e`), 4 noir.
+- L'ocre déborde de 0,3 mm sous le bleu (côtes, lacs). La trame marron, les fleuves bleus et tout le
+  noir s'impriment par-dessus l'ocre, sans réserve : un bleu et un noir couvrants conviennent.
+- Calque 2 (relief) : trame de points de 18 lignes/cm à 45°, plus petit point ~0,22 mm → écran à maille
+  fine (120 à 150 fils/cm) et insolation soignée. Les autres calques sont des aplats et traits ≥ 0,2 mm.
+- Le blanc (ciel au-dessus de l'horizon, glace de l'Arctique, neige) est le papier : aucune encre blanche.
 
 ## Régénérer
 
@@ -48,9 +59,16 @@ Réglages en tête de `02_carte.py` :
   Les noms sont du texte modifiable dans les SVG (`textPath` pour les noms courbes), et des tracés
   vectoriels dans les PDF ;
 - capitales des pays nommés (pas les micro-États) : rond pointé et nom en italique souligné
-  (`CAPITALE_MM`, Helvetica Neue Bold Italic), placé autour du point (est, ouest, diagonales, nord,
+  (`CAPITALE_MM`, 4,8 mm, Helvetica Neue Bold Italic), placé autour du point (est, ouest, diagonales, nord,
   sud) sans toucher les autres noms ; les symboles sont réservés avant les noms de pays, qui se
   décalent un peu pour les éviter. `NOMS_CAPITALES` corrige un nom (Noursoultan → Astana) ;
+- villes de plus de 200 000 habitants (`VILLE_POP_MIN`, population d'agglomération `POP_MAX` de
+  Natural Earth) : point plein et nom en romain (`VILLE_MM` : 3 mm, 3,6 mm au-delà d'un million ; Helvetica Neue Medium), placées par
+  population décroissante tant qu'il y a la place (environ 310 sur 430) ; les points des villes de
+  plus d'un million (`VILLE_POP_RESERVEE`) sont réservés avant les noms de pays. Un nom de pays épuise
+  décalages et réductions dans son orientation préférée avant de s'incliner ;
+- routes : grands axes de Natural Earth (`ROUTE_RANG_MAX`, rang ≤ 4), en noir fin (`TRAIT_ROUTE_MM`),
+  sur la terre seulement, interrompus autour des noms et des points de villes ;
 - canevas : parallèles et méridiens tous les `PAS_GRATICULE` degrés (`TRAIT_GRATICULE_MM`) ; seuls les
   méridiens multiples de 30° montent jusqu'au pôle ; les lignes s'interrompent autour des noms
   (`BLANC_AUTOUR_NOMS_MM`) ; degrés inscrits là où les lignes touchent le bord (`DEGRES_MM`) ;
@@ -69,7 +87,7 @@ Réglages en tête de `02_carte.py` :
 - Terres, lacs (dont la mer Caspienne) et fleuves (`ne_10m_rivers_lake_centerlines`) : Natural Earth 10m, version 5.1.1
   (dépôt nvkelso/natural-earth-vector, tag `v5.1.1`).
 - Frontières (`ne_10m_admin_0_boundary_lines_land`) et noms des pays en français, avec leurs points
-  d'étiquette (`ne_10m_admin_0_countries`), capitales (`ne_10m_populated_places`, « Admin-0 capital ») : même version. Frontières internationalement reconnues :
+  d'étiquette (`ne_10m_admin_0_countries`), capitales et villes (`ne_10m_populated_places`), routes (`ne_10m_roads`) : même version. Frontières internationalement reconnues :
   les lignes « disputées » de Crimée et du détroit de Kertch et les lignes internes à Chypre sont écartées.
 - Glaciers : Natural Earth 10m (`ne_10m_glaciated_areas`), même version.
 - Banquise : NSIDC Sea Ice Index, version 4.0 (G02135), étendue mensuelle (concentration ≥ 15 %)

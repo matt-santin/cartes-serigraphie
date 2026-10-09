@@ -176,9 +176,11 @@ def caspienne_geo():
     raise ValueError("Caspienne introuvable")
 
 
-def charger_bassins():
-    """Bassins de niveau 5, avec le versant et l'unité (grand bassin ou reste du versant)."""
-    b = pd.concat([gpd.read_file(f) for f in sorted(DATA.glob("bassins_*/*.shp"))], ignore_index=True)
+def charger_bassins(fichiers=None):
+    """Bassins HydroBASINS (niveau 5 par défaut), avec le versant et l'unité (grand bassin
+    ou reste du versant)."""
+    fichiers = fichiers or sorted(DATA.glob("bassins_*/*.shp"))
+    b = pd.concat([gpd.read_file(f) for f in fichiers], ignore_index=True)
     mers = gpd.read_file(DATA / "mers_iho.geojson")
     versant_mer = {mer: v for v, liste in VERSANTS.items() for mer in liste}
     arbre = shapely.STRtree(mers.geometry.simplify(0.02).values)   # simplifiées : 3,5 M de sommets sinon
@@ -199,7 +201,7 @@ def charger_bassins():
     b["unite"] = np.where(grand, b.MAIN_BAS.astype(str), "reste " + b.versant.astype(str))
     b.loc[b.versant.isna(), "unite"] = None
     n_grands = b[grand].MAIN_BAS.nunique()
-    print(f"   bassins : {len(b)} de niveau 5, {n_grands} grands bassins, "
+    print(f"   bassins : {len(b)} sous-bassins, {n_grands} grands bassins, "
           f"{b.versant.nunique()} versants")
     return b
 
